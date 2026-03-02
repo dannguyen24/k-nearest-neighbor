@@ -139,6 +139,24 @@ X = vectorizer.fit_transform(clean_reviews)
 # This is your "vector database" — 25,000 rows, one per review
 ```
 
+**Understanding X.shape → (25000, ~50000):** This describes the dimensions of the matrix — think of it like a table:
+
+```
+              word_0   word_1   word_2   ...   word_49999
+review_0   [  0.0,     0.52,    0.0,    ...     0.0     ]
+review_1   [  0.31,    0.0,     0.0,    ...     0.71    ]
+review_2   [  0.0,     0.0,     0.88,   ...     0.0     ]
+...
+review_24999 [ 0.0,    0.14,    0.0,    ...     0.0     ]
+```
+
+- **25,000 rows** = one row per training review
+- **~50,000 columns** = one column per unique word found across all reviews (the vocabulary)
+- **Each cell value** = the TF-IDF score of that word in that review (0.0 if the word doesn't appear in that review)
+- The `~` means "approximately" — the exact vocabulary size depends on how many unique words survive after stemming and stop-word removal
+
+**Why mostly zeros?** Any single review only uses a few hundred words out of 50,000 possible ones, so most cells are 0. This is called a **sparse matrix** — Python stores it efficiently by only recording the non-zero values.
+
 **The vectorizer must be fitted only on training data.** When you later process test reviews, you call `vectorizer.transform(test_reviews)` — not `fit_transform` — so test reviews are forced into the same vocabulary columns.
 
 ### Step 4 — Reduce dimensions with SVD
@@ -165,43 +183,111 @@ At this point you have:
 
 **Why not just test on test_data.txt directly?** Because you have no ground truth labels for it. You can only submit to Gradescope 10 times per day, and each submission counts. Cross-validation lets you compare parameter settings using only the labeled training data.
 
-### The parameters you are searching over
+---
 
-You pick a list of candidate values for each variable, then test every combination:
+### Analogy: Studying for an Exam
+
+Imagine you have 500 pages of class notes and a real exam coming up (Gradescope).
+
+You cannot use the real exam to practice — you only get one shot at it. So instead, you split your own notes into two parts:
+- 400 pages to **study from**
+- 100 pages to **quiz yourself** (pretend you haven't seen them)
+
+You study the 400 pages, then quiz yourself on the 100. If you score 85%, great — that study method works. If you score 60%, something is wrong.
+
+That is cross-validation. The 25,000 **labeled** training reviews are your notes. `test_data.txt` is the real exam. You never practice on the real exam — you hold it back until the very end.
+
+---
+
+### Analogy: The Grid Search (Testing All Combinations)
+
+Now imagine you are not sure which study strategy works best:
+
+- Strategy A: Read notes + highlight keywords
+- Strategy B: Read notes + make flashcards
+- Strategy C: Watch lecture videos + read notes
+
+You want to find the best strategy, so you try **every one** and quiz yourself after each. You record your quiz score for each strategy. At the end, you pick the strategy with the highest score.
+
+That is a **grid search**. In this project, your "strategies" are combinations of these four settings:
 
 ```
-k_values        = [3, 5, 7, 11, 15]          # number of neighbors
-pca_dims        = [50, 100, 200]              # SVD compression size
-vectorizer_types = ['binary', 'freq', 'tfidf'] # how to score words
-distance_metrics = ['cosine', 'euclidean']    # how to measure similarity
+k_values         = [3, 5, 7, 11, 15]           # how many neighbors vote
+pca_dims         = [50, 100, 200]               # how compressed the vectors are
+vectorizer_types = ['binary', 'freq', 'tfidf']  # how words are scored
+distance_metrics = ['cosine', 'euclidean']      # how similarity is measured
 ```
 
-That is 5 × 3 × 3 × 2 = 90 combinations. For each combination, you run K-fold cross-validation and record average accuracy. At the end, pick the combination with the highest score.
+That gives 5 × 3 × 3 × 2 = **90 combinations** to try. For each one, you run cross-validation and record the average accuracy. At the end, pick the winner.
 
-**This loop is called a grid search.** You are not guessing — you are systematically measuring each combination's actual performance on held-out data.
+You are not guessing which settings work best — you are measuring all of them.
 
-### What K-fold cross-validation does
+---
 
-Split the 25,000 labeled training reviews into K equal groups (folds). Common choices: K=5 or K=10.
+### What a "Fold" Is
+
+A fold is just a chunk of your training data temporarily set aside to act as a mini test set.
+
+With 25,000 reviews split into 5 folds:
 
 ```
-Fold 1: reviews 0–4999
-Fold 2: reviews 5000–9999
-Fold 3: reviews 10000–14999
-Fold 4: reviews 15000–19999
-Fold 5: reviews 20000–24999
+Fold 1: reviews    0 – 4,999   (5,000 reviews)
+Fold 2: reviews 5,000 – 9,999
+Fold 3: reviews 10,000 – 14,999
+Fold 4: reviews 15,000 – 19,999
+Fold 5: reviews 20,000 – 24,999
 ```
 
-For one combination of parameters, run K rounds:
+Each fold takes a turn being the "quiz set." The other 4 folds are the "study set."
 
-- **Round 1:** Train on folds 2+3+4+5, validate on fold 1
-- **Round 2:** Train on folds 1+3+4+5, validate on fold 2
-- **Round 3:** Train on folds 1+2+4+5, validate on fold 3
-- ...and so on
+---
 
-Each round gives you an accuracy. Average those K accuracies → that combination's score.
+### What One Full Cross-Validation Run Looks Like (for one parameter combo)
 
-**Key discipline:** The vectorizer and SVD are always fitted on the training folds only, then applied to the validation fold. Never fit on the validation fold — that would leak information.
+Take the combination: `k=5, pca_dims=100, tfidf, cosine`
+
+```
+Round 1: Study on folds 2+3+4+5 → Quiz on fold 1 → accuracy = 84%
+Round 2: Study on folds 1+3+4+5 → Quiz on fold 2 → accuracy = 87%
+Round 3: Study on folds 1+2+4+5 → Quiz on fold 3 → accuracy = 83%
+Round 4: Study on folds 1+2+3+5 → Quiz on fold 4 → accuracy = 86%
+Round 5: Study on folds 1+2+3+4 → Quiz on fold 5 → accuracy = 85%
+
+Average accuracy for this combo: (84+87+83+86+85) / 5 = 85%
+```
+
+Why average 5 rounds instead of just 1? Because one quiz might be unlucky — the 1,000 questions you picked happened to be on topics you studied less. Averaging 5 rounds gives a fairer, more reliable estimate.
+
+---
+
+### Why This Is Better Than a Single Split
+
+If you just did one 80/20 split (20,000 train, 5,000 validate):
+- Maybe that one validation set happened to have mostly easy reviews → score is inflated
+- Maybe it had hard reviews → score is deflated
+- You cannot tell which
+
+With 5-fold cross-validation, every review spends exactly one round as a validation review. The average is much more reliable.
+
+---
+
+### The Key Rule: Never Leak Information
+
+Every round, the vectorizer and SVD are **re-fitted from scratch on the training folds only**, then applied to the validation fold.
+
+```
+Round 1:
+  - Fit vectorizer on folds 2+3+4+5  →  transform fold 1 using it
+  - Fit SVD on folds 2+3+4+5         →  transform fold 1 using it
+  - Run KNN, measure accuracy
+
+Round 2:
+  - Fit a fresh vectorizer on folds 1+3+4+5  →  transform fold 2
+  - Fit a fresh SVD on folds 1+3+4+5         →  transform fold 2
+  - Run KNN, measure accuracy
+```
+
+If you fitted the vectorizer on all 5 folds before splitting, the vocabulary would be built using words from the validation fold too — the model would have "seen" those reviews during setup, making accuracy look artificially higher than it really is. This is called **data leakage**.
 
 ---
 
